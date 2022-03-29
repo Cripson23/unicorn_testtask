@@ -14,11 +14,9 @@ class App(Basic):
     def __init__(self):
         self.period, self.debug, self.currencies = self.parse_args()
         self.logger = self.get_logger()
-        self.loop = asyncio.get_event_loop()
         self.web_app = web.Application()
 
     def parse_args(self):
-        # Args
         parser = argparse.ArgumentParser(description="Input data")
         parser.add_argument("-period", dest="N", required=True, type=int)
         parser.add_argument("-debug", dest="debug")
@@ -26,6 +24,7 @@ class App(Basic):
 
         currencies = {}
 
+        # Parse currencies
         for i in range(0, len(args_currencies), 2):
             currency_name = args_currencies[i][1:]
             currencies[currency_name] = {
@@ -64,12 +63,14 @@ class App(Basic):
     async def start_app(self):
         self.logger.info("App started!")
 
+        asyncio.get_event_loop()
         asyncio.create_task(self.get_currencies_rate())
         asyncio.create_task(self.start_server())
         asyncio.create_task(self.changes_monitor())
 
         await asyncio.Event().wait()
 
+    # Update rate
     async def get_currencies_rate(self):
         while True:
             try:
@@ -126,6 +127,7 @@ class App(Basic):
 
             await asyncio.sleep(60)
 
+    # Routes
     async def setup_routes(self):
         for currency in self.currencies.keys():
             self.web_app.router.add_get(f"/{currency}/get", self.get_currency)
@@ -133,6 +135,7 @@ class App(Basic):
         self.web_app.router.add_post(f"/amount/set", self.set_amount)
         self.web_app.router.add_post(f"/modify", self.modify_amount)
 
+    # Request/Response debug
     async def req_res_debug(self, request, res):
         content = await request.read()
         request_info = {
@@ -154,12 +157,17 @@ class App(Basic):
         self.logger.debug("Request info: " + json.dumps(request_info))
         self.logger.debug("Response info: " + json.dumps(response_info))
 
+    # /{currency}/get
     async def get_currency(self, request):
-        get_currency = str(re.findall(r'\/(...)\/', str(request.url))[0])
+        get_currency = str(re.findall(r'\/(...)\/', str(request.url))[0])  # получаем наим. текущей валюты
         response_body = {get_currency: copy.deepcopy(self.currencies[get_currency])}
-        for currency in self.currencies.keys():
+        for currency in self.currencies.keys():  # проходимся по всем валютам кроме текущей
             if currency != get_currency:
-                response_body[get_currency][currency] = round(float(response_body[get_currency]['amount']) * float(response_body[get_currency]['rate']) / float(self.currencies[currency]['rate']), 4)
+                # Узнаем суммы в других валютах
+                # кол-во валюты умножаем на курс в рублях и переводим во вторую валюту путём деления на её курс
+                response_body[get_currency][currency] = round(
+                    float(response_body[get_currency]['amount']) * float(response_body[get_currency]['rate']) / float(
+                        self.currencies[currency]['rate']), 4)
 
         res = web.json_response(response_body, content_type="text/plain")
 
@@ -168,6 +176,7 @@ class App(Basic):
 
         return res
 
+    # /amount/get
     async def get_amount(self, request):
         response_body = {'amount': {}, 'rate': {}, 'sum': {}}
         sum_amount_rub = 0
@@ -187,6 +196,7 @@ class App(Basic):
 
         return res
 
+    # /amount/set
     async def set_amount(self, request):
         if request.body_exists:
             res = await request.read()
@@ -194,18 +204,31 @@ class App(Basic):
             for currency in data.keys():
                 if currency not in self.currencies:
                     self.logger.error(f"Unknown currency name: {currency}")
-                    return web.json_response(f"Unknown currency name: {currency}", content_type="text/plain")
+                    res = web.json_response(f"Unknown currency name: {currency}", content_type="text/plain")
+                    if self.debug is True:
+                        await self.req_res_debug(request, res)
+                    return res
 
                 data[currency] = float(data[currency])
                 if data[currency] < 0:
                     self.logger.error(f"Negative amount")
-                    return web.json_response(f"Amount must not be negative", content_type="text/plain")
+                    res = web.json_response(f"Amount must not be negative", content_type="text/plain")
+                    if self.debug is True:
+                        await self.req_res_debug(request, res)
+                    return res
 
                 self.currencies[currency]['amount'] = data[currency]
-            return web.json_response("Amount set successfully", content_type="text/plain")
+            res = web.json_response("Amount set successfully", content_type="text/plain")
+            if self.debug is True:
+                await self.req_res_debug(request, res)
+            return res
         else:
-            return web.json_response("Invalid data passed", content_type="text/plain")
+            res = web.json_response("Invalid data passed", content_type="text/plain")
+            if self.debug is True:
+                await self.req_res_debug(request, res)
+            return res
 
+    # /modify
     async def modify_amount(self, request):
         if request.body_exists:
             data = await request.read()
