@@ -102,7 +102,7 @@ class App(Basic):
         await site.start()
         self.logger.info("The server has been started")
 
-    # Роуты
+    # Routes
     async def setup_routes(self, web_app):
         for currency in self.currencies.keys():
             web_app.router.add_get(f"/{currency}/get", self.get_currency)
