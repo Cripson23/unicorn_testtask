@@ -1,76 +1,37 @@
 import asyncio
-from aiohttp import web
-import argparse
-import logging
 import json
 import requests
 import re
 import copy
+from aiohttp import web
 
 from basic import Basic
 
 
 class App(Basic):
     def __init__(self):
-        self.period, self.debug, self.currencies = self.parse_args()
-        self.logger = self.get_logger()
-        self.web_app = web.Application()
+        super().__init__()
 
     def parse_args(self):
-        parser = argparse.ArgumentParser(description="Input data")
-        parser.add_argument("-period", dest="N", required=True, type=int)
-        parser.add_argument("-debug", dest="debug")
-        args, args_currencies = parser.parse_known_args()
-
-        currencies = {}
-
-        # Parse currencies
-        for i in range(0, len(args_currencies), 2):
-            currency_name = args_currencies[i][1:]
-            currencies[currency_name] = {
-                'amount': float(args_currencies[i + 1])
-            }
-
-        if len(currencies.keys()) < 2:
-            raise Exception("Currencies not transferred (min. 2)")
-
-        debug_true = ['1', 'true', 'y']
-
-        if args.debug is not None and str(args.debug).lower() in debug_true:
-            debug = True
-        else:
-            debug = False
-
-        return args.N, debug, currencies
+        super().parse_args()
 
     def get_logger(self):
-        logger = logging.getLogger()
+        super().get_logger()
 
-        formatter = logging.Formatter(
-            '%(asctime)s - %(module)s - %(levelname)s - %(funcName)s: %(lineno)d - %(message)s',
-            datefmt="'%H:%M:%S',")
-
-        consoleHandler = logging.StreamHandler()
-        consoleHandler.setFormatter(formatter)
-        logger.addHandler(consoleHandler)
-
-        if self.debug is True:
-            logger.setLevel(logging.DEBUG)
-        else:
-            logger.setLevel(logging.INFO)
-        return logger
+    async def req_res_debug(self, request, res):
+        await super().req_res_debug(request, res)
 
     async def start_app(self):
         self.logger.info("App started!")
 
         asyncio.get_event_loop()
         asyncio.create_task(self.get_currencies_rate())
-        asyncio.create_task(self.start_server())
         asyncio.create_task(self.changes_monitor())
+        asyncio.create_task(self.start_server())
 
         await asyncio.Event().wait()
 
-    # Update rate
+    # Обновление курсов
     async def get_currencies_rate(self):
         while True:
             try:
@@ -98,6 +59,7 @@ class App(Basic):
 
             await asyncio.sleep(self.period * 60)
 
+    # Отслеживание изменений в данных
     async def changes_monitor(self):
         self.logger.info("Start changes monitor")
         currencies_last = copy.deepcopy(self.currencies)
@@ -111,12 +73,15 @@ class App(Basic):
                 sum_amount_rub = 0
                 for idx, currency in enumerate(self.currencies.keys()):
                     amount_message += f"{currency}: {self.currencies[currency]['amount']}\n"
+                    # Считаем общую сумму в рублях
                     sum_amount_rub += self.currencies[currency]['amount'] * self.currencies[currency]['rate']
+                    # Проходимся по каждой валюте, идущей после текущей и находим курс
                     for ids, curr in enumerate(self.currencies.keys()):
                         if ids > idx:
                             rate_message += f"{currency}-{curr}: {round(self.currencies[curr]['rate'] / self.currencies[currency]['rate'], 4)}\n"
 
                 sum_message = "sum: "
+                # Переводим сумму в каждую из валют и добавляем в сообщение
                 for currency in self.currencies.keys():
                     sum_message += f"{round(sum_amount_rub / self.currencies[currency]['rate'], 2)} {currency} / "
                 sum_message = sum_message[:-2]
@@ -127,35 +92,23 @@ class App(Basic):
 
             await asyncio.sleep(60)
 
-    # Routes
-    async def setup_routes(self):
+    # Server
+    async def start_server(self):
+        web_app = web.Application()
+        await self.setup_routes(web_app)
+        runner = web.AppRunner(web_app)
+        await runner.setup()
+        site = web.TCPSite(runner)
+        await site.start()
+        self.logger.info("The server has been started")
+
+    # Роуты
+    async def setup_routes(self, web_app):
         for currency in self.currencies.keys():
-            self.web_app.router.add_get(f"/{currency}/get", self.get_currency)
-        self.web_app.router.add_get(f"/amount/get", self.get_amount)
-        self.web_app.router.add_post(f"/amount/set", self.set_amount)
-        self.web_app.router.add_post(f"/modify", self.modify_amount)
-
-    # Request/Response debug
-    async def req_res_debug(self, request, res):
-        content = await request.read()
-        request_info = {
-            'method': str(request.method),
-            'url': str(request.url),
-            'host': str(request.host),
-            'headers': str(request.headers),
-            'content-type': str(request.content_type),
-            'content': str(content)
-        }
-
-        response_info = {
-            'status': str(res.status),
-            'headers': str(res.headers),
-            'content-type': str(res.content_type),
-            'content': str(res.text)
-        }
-
-        self.logger.debug("Request info: " + json.dumps(request_info))
-        self.logger.debug("Response info: " + json.dumps(response_info))
+            web_app.router.add_get(f"/{currency}/get", self.get_currency)
+        web_app.router.add_get(f"/amount/get", self.get_amount)
+        web_app.router.add_post(f"/amount/set", self.set_amount)
+        web_app.router.add_post(f"/modify", self.modify_amount)
 
     # /{currency}/get
     async def get_currency(self, request):
@@ -182,11 +135,14 @@ class App(Basic):
         sum_amount_rub = 0
         for idx, currency in enumerate(self.currencies.keys()):
             response_body['amount'][currency] = copy.deepcopy(self.currencies[currency]['amount'])
+            # Считаем общую сумму в рублях
             sum_amount_rub += self.currencies[currency]['amount'] * self.currencies[currency]['rate']
+            # Проходимся по каждой валюте, идущей после текущей и находим курс
             for ids, curr in enumerate(self.currencies.keys()):
                 if ids > idx:
                     response_body['rate'][f'{currency}-{curr}'] = round(self.currencies[curr]['rate'] / self.currencies[currency]['rate'], 4)
 
+        # Переводим сумму в каждую из валют
         for currency in self.currencies.keys():
             response_body['sum'][currency] = round(sum_amount_rub / self.currencies[currency]['rate'], 2)
 
@@ -252,14 +208,6 @@ class App(Basic):
             if self.debug is True:
                 await self.req_res_debug(request, res)
             return res
-
-    async def start_server(self):
-        await self.setup_routes()
-        runner = web.AppRunner(self.web_app)
-        await runner.setup()
-        site = web.TCPSite(runner)
-        await site.start()
-        self.logger.info("The server has been started")
 
 
 if __name__ == '__main__':
